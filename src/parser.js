@@ -1,18 +1,56 @@
-// 微博热搜数据解析与过滤
+// 微博热搜数据解析与过滤（基于 weibo.com/ajax/side/hotSearch 结构）
 
-// 推广/广告条目通常使用以下 icon 标识（基于实测数据）
-const PROMOTION_ICON_KEYS = ['imgtool', 'recom', 'zongbang', 'ad_', 'tuiguang', 'huodong'];
+// 推广/广告条目识别：hotgovs 是官方置顶推广；realtime 中 label/category 为"荐"/"商"等也视为推广
+// 实测 realtime 中商业推广通过 is_promoted/label 判断；hotgovs 单独数组，默认剔除（用户要求剔除广告推广）
+// 但官方置顶时政条目（hotgovs）按用户指令"包含置顶"，故保留 hotgovs 的第一条置顶并标记 pinned
 
-// 判断是否为商业推广/广告条目
-function isPromotion(card) {
-  const icon = card.icon || '';
-  return PROMOTION_ICON_KEYS.some(k => icon.includes(k));
-}
+/**
+ * 解析 weibo.com/ajax/side/hotSearch 响应
+ * @returns {Array<{title, hot, label, category, wordScheme, pinned, url}>}
+ */
+function parseHotSearchCards(data) {
+  const result = [];
+  if (!data || !data.data) return result;
 
-// 判断是否为官方置顶条目（icon flags/2_0）
-function isPinned(card) {
-  const icon = card.icon || '';
-  return icon.includes('flags/2_0');
+  // 1. 官方置顶（hotgovs）：保留为置顶条目
+  const hotgovs = data.data.hotgovs;
+  if (Array.isArray(hotgovs)) {
+    for (const g of hotgovs) {
+      const title = (g.word || g.name || '').replace(/^#|#$/g, '').trim();
+      if (!title) continue;
+      result.push({
+        title,
+        hot: '',
+        label: g.icon_desc || '置顶',
+        category: '',
+        wordScheme: g.word || '',
+        pinned: true,
+        url: ''
+      });
+    }
+  }
+
+  // 2. 实时热搜（realtime）：剔除商业推广，保留真实热搜
+  const realtime = data.data.realtime;
+  if (Array.isArray(realtime)) {
+    for (const item of realtime) {
+      const title = (item.word || item.note || '').trim();
+      if (!title) continue;
+      // 商业推广判断：is_promoted 字段或 label 为"荐"/"商"
+      if (item.is_promoted === 1 || item.label_name === '荐' || item.label_name === '商') continue;
+      result.push({
+        title,
+        hot: item.num != null ? String(item.num) : '',
+        label: item.label_name || item.icon_desc || '',
+        category: item.category || '',
+        wordScheme: item.word_scheme || item.word || '',
+        pinned: false,
+        url: ''
+      });
+    }
+  }
+
+  return result;
 }
 
 // 去除 HTML 标签，还原纯文本
@@ -32,35 +70,8 @@ function stripHtml(html) {
 }
 
 /**
- * 从热搜列表 JSON 解析条目（已剔除广告/推广）
- * @returns {Array<{title, hot, icon, scheme, pinned}>}
- */
-function parseHotSearchCards(data) {
-  const cards = data && data.data && data.data.cards;
-  if (!Array.isArray(cards)) return [];
-
-  // 主榜数据位于 cards[0].card_group
-  const group = cards[0] && cards[0].card_group;
-  const list = Array.isArray(group) ? group : [];
-
-  const result = [];
-  for (const card of list) {
-    if (!card.desc) continue;
-    if (isPromotion(card)) continue; // 剔除广告/推广
-    result.push({
-      title: card.desc,
-      hot: card.desc_extr || '',
-      icon: card.icon || '',
-      scheme: card.scheme || '',
-      pinned: isPinned(card)
-    });
-  }
-  return result;
-}
-
-/**
- * 从搜索结果 JSON 中提取第一条微博正文
- * 搜索结果中 card_type=9 的卡片为 mblog 卡片
+ * 从 m.weibo.cn 搜索结果 JSON 中提取第一条微博正文
+ * card_type=9 的卡片为 mblog 卡片
  */
 function extractFirstWeiboText(data) {
   const cards = data && data.data && data.data.cards;
@@ -70,7 +81,6 @@ function extractFirstWeiboText(data) {
     if (card.card_type === 9 && card.mblog && card.mblog.text) {
       return stripHtml(card.mblog.text);
     }
-    // 部分结果嵌套在 card_group 中
     if (Array.isArray(card.card_group)) {
       for (const sub of card.card_group) {
         if (sub.card_type === 9 && sub.mblog && sub.mblog.text) {
@@ -85,7 +95,5 @@ function extractFirstWeiboText(data) {
 module.exports = {
   parseHotSearchCards,
   extractFirstWeiboText,
-  stripHtml,
-  isPromotion,
-  isPinned
+  stripHtml
 };

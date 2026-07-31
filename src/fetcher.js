@@ -1,90 +1,61 @@
 const axios = require('axios');
-const { getVisitorCookies, UA } = require('./visitor');
 const { extractFirstWeiboText } = require('./parser');
 const logger = require('./logger');
 
-const HOT_SEARCH_URL = 'https://m.weibo.cn/api/container/getIndex?containerid=106003type%3D25%26t%3D3%26disable_hot%3D1%26filter_type%3Drealtimehot';
+// PC 端公开接口：无需 cookie，海外可用，返回 50 条热搜
+const HOT_SEARCH_URL = 'https://weibo.com/ajax/side/hotSearch';
 
-// 构造请求头，可选附带 visitor cookie
-function buildHeaders(cookies) {
-  const h = {
+// 移动端 UA + Referer：触发 PC 接口返回 JSON 的关键
+const UA = 'Mozilla/5.0 (iPhone; CPU iPhone OS 15_0 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/15.0 Mobile/15E148 Safari/604.1';
+
+function buildHeaders() {
+  return {
     'User-Agent': UA,
-    'Referer': 'https://m.weibo.cn/',
-    'Accept': 'application/json, text/plain, */*',
-    'X-Requested-With': 'XMLHttpRequest',
-    'MWeibo-Pwa': '1'
+    'Referer': 'https://weibo.com/',
+    'Accept': 'application/json, text/plain, */*'
   };
-  if (cookies && cookies.SUB) {
-    h.Cookie = `SUB=${cookies.SUB}; SUBP=${cookies.SUBP || ''}`;
-  }
-  return h;
 }
 
-// 自定义响应解析：JSON 优先，失败保留原始字符串（用于检测 visitor 拦截页）
 const parseResponse = [(d) => {
   try { return JSON.parse(d); } catch { return d; }
 }];
 
-// 判断响应是否需要走 visitor 流程：
-// 1) HTML 拦截页（Sina Visitor System）
-// 2) JSON 返回 ok:-100（重定向到登录/passport）
-function isVisitorBlock(data) {
-  if (typeof data === 'string') {
-    return data.includes('Sina Visitor') || data.includes('visitor_gray');
-  }
-  if (data && typeof data === 'object') {
-    if (data.ok === -100) return true;
-    // 部分拦截返回 ok:0 且带 passport 重定向 url
-    if (data.ok === 0 && data.url && String(data.url).includes('passport.weibo.com')) return true;
-  }
-  return false;
-}
-
 /**
- * 抓取热搜列表 JSON
- * 策略：主动获取 visitor cookie 后再请求（云服务器 IP 段必然被风控）
- * 若仍被拦截则刷新 cookie 重试一次
+ * 抓取热搜列表 JSON（weibo.com PC 公开接口，无需 cookie）
  */
-async function fetchHotSearchList(prefetchedCookies) {
-  let cookies = prefetchedCookies;
-  if (!cookies) {
-    logger.info('未传入 visitor cookie，主动获取...');
-    cookies = await getVisitorCookies();
-  }
-
-  for (let attempt = 0; attempt < 2; attempt++) {
-    const res = await axios.get(HOT_SEARCH_URL, {
-      headers: buildHeaders(cookies),
-      timeout: 15000,
-      transformResponse: parseResponse
-    });
-
-    if (isVisitorBlock(res.data)) {
-      logger.warn(`热搜接口仍被拦截（ok=-100/visitor），刷新 cookie 重试（第 ${attempt + 1} 次）...`);
-      cookies = await getVisitorCookies();
-      continue;
-    }
-    if (res.data && res.data.ok === 1) return res.data;
-    throw new Error('热搜接口返回异常: ' + JSON.stringify(res.data).slice(0, 200));
-  }
-  throw new Error('热搜接口刷新 cookie 后仍被拦截');
+async function fetchHotSearchList() {
+  const res = await axios.get(HOT_SEARCH_URL, {
+    headers: buildHeaders(),
+    timeout: 15000,
+    transformResponse: parseResponse
+  });
+  if (res.data && res.data.ok === 1 && res.data.data) return res.data;
+  throw new Error('热搜接口返回异常: ' + JSON.stringify(res.data).slice(0, 200));
 }
 
 /**
  * 抓取某关键词搜索结果中第一条微博的正文
+ * 主用 m.weibo.cn 移动端搜索接口；失败返回空串
  * @returns {Promise<string>} 纯文本正文，无内容则返回空串
  */
-async function fetchFirstWeiboText(keyword, cookies) {
+async function fetchFirstWeiboText(keyword) {
   const q = encodeURIComponent(keyword);
   const url = `https://m.weibo.cn/api/container/getIndex?containerid=100103type%3D1%26q%3D${q}`;
-  const res = await axios.get(url, {
-    headers: buildHeaders(cookies),
-    timeout: 15000,
-    transformResponse: parseResponse
-  });
-  if (isVisitorBlock(res.data)) return '';
-  if (res.data && res.data.ok === 1) return extractFirstWeiboText(res.data);
+  try {
+    const res = await axios.get(url, {
+      headers: {
+        'User-Agent': UA,
+        'Referer': 'https://m.weibo.cn/',
+        'Accept': 'application/json, text/plain, */*'
+      },
+      timeout: 15000,
+      transformResponse: parseResponse
+    });
+    if (res.data && res.data.ok === 1) return extractFirstWeiboText(res.data);
+  } catch (e) {
+    logger.warn(`搜索「${keyword}」失败: ${e.message}`);
+  }
   return '';
 }
 
-module.exports = { fetchHotSearchList, fetchFirstWeiboText, getVisitorCookies };
+module.exports = { fetchHotSearchList, fetchFirstWeiboText };

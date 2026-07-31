@@ -1,4 +1,4 @@
-const { fetchHotSearchList, fetchFirstWeiboText, getVisitorCookies } = require('./fetcher');
+const { fetchHotSearchList, fetchFirstWeiboText } = require('./fetcher');
 const { parseHotSearchCards } = require('./parser');
 const { toMarkdown, toJson } = require('./formatter');
 const { saveResult } = require('./storage');
@@ -14,18 +14,10 @@ async function main() {
   const collectedAt = new Date();
   logger.info(`=== 微博热搜抓取开始 ${collectedAt.toISOString()} ===`);
 
-  // 1. 预取 visitor cookie（云服务器 IP 段必然被风控，必须先拿 cookie）
-  let cookies = null;
-  try {
-    cookies = await getVisitorCookies();
-  } catch (e) {
-    logger.warn('visitor cookie 预取失败: ' + e.message);
-  }
-
-  // 2. 抓取热搜列表（带重试，复用预取的 cookie）
+  // 1. 抓取热搜列表（带重试，无需 cookie）
   let hotData;
   try {
-    hotData = await retry(() => fetchHotSearchList(cookies), { times: 3, delay: 2000, label: '热搜列表抓取' });
+    hotData = await retry(() => fetchHotSearchList(), { times: 3, delay: 2000, label: '热搜列表抓取' });
   } catch (err) {
     logger.error(`热搜列表抓取失败（已重试 3 次）: ${err.message}`);
     const file = logger.logFailure(collectedAt, err);
@@ -33,22 +25,22 @@ async function main() {
     process.exit(1);
   }
 
-  // 3. 解析并剔除广告/推广
+  // 2. 解析并剔除广告/推广
   let items = parseHotSearchCards(hotData);
   logger.info(`解析到 ${items.length} 条热搜（已剔除广告/推广）`);
 
-  // 4. 取前 50 条
+  // 3. 取前 50 条
   if (items.length < TARGET_COUNT) {
     logger.warn(`仅获取到 ${items.length} 条，不足目标 ${TARGET_COUNT} 条`);
   }
   items = items.slice(0, TARGET_COUNT);
 
-  // 5. 逐条抓取首条微博正文（串行 + 间隔，降低风控风险）
+  // 4. 逐条抓取首条微博正文（串行 + 间隔，降低风控风险）
   for (let i = 0; i < items.length; i++) {
     const item = items[i];
     try {
       const text = await retry(
-        () => fetchFirstWeiboText(item.title, cookies),
+        () => fetchFirstWeiboText(item.title),
         { times: 2, delay: 1500, label: `第${i + 1}条「${item.title}」详情` }
       );
       item.firstWeibo = text || '（无微博内容）';
@@ -59,18 +51,18 @@ async function main() {
     if (i < items.length - 1) await sleep(DETAIL_DELAY);
   }
 
-  // 6. 质量校验
+  // 5. 质量校验
   const okCount = items.filter(it => it.firstWeibo && !it.firstWeibo.includes('获取失败')).length;
   logger.info(`首条微博正文获取成功 ${okCount}/${items.length} 条`);
 
-  // 7. 格式化并存储
+  // 6. 格式化并存储
   const md = toMarkdown(items, collectedAt);
   const json = toJson(items, collectedAt);
   const paths = saveResult(md, json, collectedAt);
   logger.info(`已保存: ${paths.mdPath}`);
   logger.info(`已保存: ${paths.jsonPath}`);
 
-  // 8. 结构变化预警
+  // 7. 结构变化预警
   if (items.length < 40) {
     logger.warn('⚠️ 热搜条目数明显偏少，微博页面结构可能已变更，请人工检查');
   }
