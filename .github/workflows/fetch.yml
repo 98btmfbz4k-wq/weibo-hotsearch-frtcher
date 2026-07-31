@@ -1,0 +1,39 @@
+name: 微博热搜定时抓取
+
+on:
+  schedule:
+    # UTC 时间 → 北京时间
+    # 04:00 UTC = 12:00 CST
+    # 10:00 UTC = 18:00 CST
+    - cron: '0 4 * * *'
+    - cron: '0 10 * * *'
+  workflow_dispatch: # 支持在 GitHub 页面手动触发
+
+permissions:
+  contents: write # 允许将抓取结果 commit 回仓库
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 配置 Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: 安装依赖
+        run: npm install
+
+      - name: 抓取微博热搜
+        run: npm start
+
+      - name: 提交抓取结果
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add data/ logs/ || true
+          git commit -m "chore: 抓取微博热搜 $(TZ='Asia/Shanghai' date '+%Y-%m-%d %H:%M')" || echo "无变更可提交"
+          git push

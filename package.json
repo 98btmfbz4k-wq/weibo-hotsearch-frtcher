@@ -1,0 +1,17 @@
+{
+  "name": "weibo-hotsearch-frtcher",
+  "version": "1.0.0",
+  "description": "微博热搜定时抓取器 - 每天 12:00 / 18:00 抓取前 50 条热搜（剔除推广）及每条对应的首条微博正文",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node src/index.js",
+    "fetch": "node src/index.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "axios": "^1.7.9"
+  },
+  "license": "MIT"
+}
