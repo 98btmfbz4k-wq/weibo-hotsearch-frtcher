@@ -14,10 +14,18 @@ async function main() {
   const collectedAt = new Date();
   logger.info(`=== 微博热搜抓取开始 ${collectedAt.toISOString()} ===`);
 
-  // 1. 抓取热搜列表（带重试）
+  // 1. 预取 visitor cookie（云服务器 IP 段必然被风控，必须先拿 cookie）
+  let cookies = null;
+  try {
+    cookies = await getVisitorCookies();
+  } catch (e) {
+    logger.warn('visitor cookie 预取失败: ' + e.message);
+  }
+
+  // 2. 抓取热搜列表（带重试，复用预取的 cookie）
   let hotData;
   try {
-    hotData = await retry(() => fetchHotSearchList(), { times: 3, delay: 2000, label: '热搜列表抓取' });
+    hotData = await retry(() => fetchHotSearchList(cookies), { times: 3, delay: 2000, label: '热搜列表抓取' });
   } catch (err) {
     logger.error(`热搜列表抓取失败（已重试 3 次）: ${err.message}`);
     const file = logger.logFailure(collectedAt, err);
@@ -25,23 +33,15 @@ async function main() {
     process.exit(1);
   }
 
-  // 2. 解析并剔除广告/推广
+  // 3. 解析并剔除广告/推广
   let items = parseHotSearchCards(hotData);
   logger.info(`解析到 ${items.length} 条热搜（已剔除广告/推广）`);
 
-  // 3. 取前 50 条
+  // 4. 取前 50 条
   if (items.length < TARGET_COUNT) {
     logger.warn(`仅获取到 ${items.length} 条，不足目标 ${TARGET_COUNT} 条`);
   }
   items = items.slice(0, TARGET_COUNT);
-
-  // 4. 预取 visitor cookie，供后续详情抓取复用
-  let cookies = null;
-  try {
-    cookies = await getVisitorCookies();
-  } catch (e) {
-    logger.warn('详情抓取的 visitor cookie 获取失败，将尝试直连: ' + e.message);
-  }
 
   // 5. 逐条抓取首条微博正文（串行 + 间隔，降低风控风险）
   for (let i = 0; i < items.length; i++) {

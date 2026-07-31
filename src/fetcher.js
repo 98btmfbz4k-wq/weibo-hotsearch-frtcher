@@ -25,18 +25,33 @@ const parseResponse = [(d) => {
   try { return JSON.parse(d); } catch { return d; }
 }];
 
-// 判断响应是否为 Sina Visitor System 拦截页
+// 判断响应是否需要走 visitor 流程：
+// 1) HTML 拦截页（Sina Visitor System）
+// 2) JSON 返回 ok:-100（重定向到登录/passport）
 function isVisitorBlock(data) {
-  if (typeof data !== 'string') return false;
-  return data.includes('Sina Visitor') || data.includes('visitor_gray');
+  if (typeof data === 'string') {
+    return data.includes('Sina Visitor') || data.includes('visitor_gray');
+  }
+  if (data && typeof data === 'object') {
+    if (data.ok === -100) return true;
+    // 部分拦截返回 ok:0 且带 passport 重定向 url
+    if (data.ok === 0 && data.url && String(data.url).includes('passport.weibo.com')) return true;
+  }
+  return false;
 }
 
 /**
  * 抓取热搜列表 JSON
- * 策略：先直连 → 若被 visitor 拦截则获取 cookie 后重试
+ * 策略：主动获取 visitor cookie 后再请求（云服务器 IP 段必然被风控）
+ * 若仍被拦截则刷新 cookie 重试一次
  */
-async function fetchHotSearchList() {
-  let cookies = null;
+async function fetchHotSearchList(prefetchedCookies) {
+  let cookies = prefetchedCookies;
+  if (!cookies) {
+    logger.info('未传入 visitor cookie，主动获取...');
+    cookies = await getVisitorCookies();
+  }
+
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await axios.get(HOT_SEARCH_URL, {
       headers: buildHeaders(cookies),
@@ -45,14 +60,14 @@ async function fetchHotSearchList() {
     });
 
     if (isVisitorBlock(res.data)) {
-      logger.warn(`热搜接口被 visitor 拦截，正在获取 visitor cookie（第 ${attempt + 1} 次）...`);
+      logger.warn(`热搜接口仍被拦截（ok=-100/visitor），刷新 cookie 重试（第 ${attempt + 1} 次）...`);
       cookies = await getVisitorCookies();
       continue;
     }
     if (res.data && res.data.ok === 1) return res.data;
     throw new Error('热搜接口返回异常: ' + JSON.stringify(res.data).slice(0, 200));
   }
-  throw new Error('热搜接口两次均被 visitor 拦截');
+  throw new Error('热搜接口刷新 cookie 后仍被拦截');
 }
 
 /**
